@@ -1,7 +1,11 @@
+import logging
+import os
 import sqlite3
 from typing import Generator
 
 from src.core.config import get_settings
+
+logger = logging.getLogger("med_backend.db")
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -113,23 +117,46 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 (r, f"Default role: {r}"),
             )
 
+    # Explicit commit to ensure schema and seeds persist even if connection closes soon after
+    try:
+        conn.commit()
+    except Exception as e:
+        logger.warning("Failed to commit schema/seed changes: %s", e)
+
 
 def _connect() -> sqlite3.Connection:
     """Create a SQLite3 connection with schema ensured, foreign keys enabled, and Row factory."""
     db_path = get_settings().SQLITE_DB
-    # NOTE: sqlite3 will fail if the parent directory does not exist. That is expected,
-    # and should be resolved via environment/volume configuration. Once the file is accessible,
-    # we auto-initialize the schema below.
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+
+    # Ensure parent directory exists to avoid "unable to open database file"
+    parent_dir = os.path.dirname(db_path) or "."
+    if parent_dir and not os.path.exists(parent_dir):
+        try:
+            os.makedirs(parent_dir, exist_ok=True)
+        except Exception as e:
+            logger.exception("Failed to create database directory '%s': %s", parent_dir, e)
+            raise
+
+    try:
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+    except sqlite3.OperationalError as e:
+        logger.exception("SQLite connection failed for path '%s': %s", db_path, e)
+        raise
+
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+    except Exception as e:
+        logger.warning("Failed to enable foreign_keys pragma: %s", e)
+
     # Ensure schema is present before handling requests
     try:
         _ensure_schema(conn)
-    except Exception:
+    except Exception as e:
         # In case of concurrent initialization attempts, ignore errors here to avoid blocking requests.
         # Subsequent statements will fail loudly if schema truly cannot be created.
-        pass
+        logger.warning("Schema initialization raised an exception (non-fatal): %s", e)
+
     return conn
 
 

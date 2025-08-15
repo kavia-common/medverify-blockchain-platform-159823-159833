@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -6,6 +8,11 @@ from src.api.routers import prescriptions as prescriptions_router
 from src.core.config import get_settings
 
 settings = get_settings()
+
+# Basic logging configuration to ensure stack traces are emitted
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("med_backend")
+logger.info("Starting Medical Prescription Backend")
 
 openapi_tags = [
     {

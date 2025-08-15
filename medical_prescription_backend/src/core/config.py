@@ -25,7 +25,7 @@ class Settings:
         default_db_path = os.path.abspath(
             os.path.join(
                 os.path.dirname(__file__),
-                "../../../medverify-blockchain-platform-159823-159832/medical_prescription_database/myapp.db",
+                "../../myapp.db",
             )
         )
 

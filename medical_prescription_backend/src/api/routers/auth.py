@@ -1,3 +1,5 @@
+import logging
+import sqlite3
 from typing import Annotated
 
 import jwt
@@ -16,6 +18,8 @@ from src.services.users import (
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 _oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+logger = logging.getLogger("med_backend.auth")
 
 
 def _get_current_user_payload(token: Annotated[str, Security(_oauth2_scheme)]) -> dict:
@@ -104,7 +108,16 @@ def register_user(payload: UserCreate, db=Depends(get_db)) -> UserPublic:
         )
         return UserPublic(**user)
     except ValueError as ve:
+        # Validation / business rule errors (e.g., duplicate email)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except sqlite3.IntegrityError as ie:
+        # Database constraint errors
+        logger.exception("Integrity error during user registration")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Integrity error: " + str(ie))
+    except Exception as e:
+        # Unexpected errors -> log full stack trace and report 500
+        logger.exception("Unexpected error during user registration: %s", e)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
 @router.post(
