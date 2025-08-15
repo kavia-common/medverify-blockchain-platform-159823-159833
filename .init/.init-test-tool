@@ -1,0 +1,4 @@
+{
+    "command": "pytest",
+    "working_directory": "/home/kavia/workspace/code-generation/medverify-blockchain-platform-159823-159833/medical_prescription_backend"
+}
