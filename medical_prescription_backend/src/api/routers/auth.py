@@ -13,6 +13,7 @@ from src.services.users import (
     authenticate_user,
     create_user,
     get_user_roles,
+    cleanup_ghost_user_records_for_email,
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -110,6 +111,7 @@ def register_user(payload: UserCreate, db=Depends(get_db)) -> UserPublic:
         - 400: Client-resolvable problems like duplicate email or business rule violations.
         - 500: Unexpected or server-side issues. Stack traces are logged for diagnosis.
     """
+    logger.info("Attempting to register user email=%s role=%s", payload.email, payload.role)
     try:
         user = create_user(
             db,
@@ -119,30 +121,64 @@ def register_user(payload: UserCreate, db=Depends(get_db)) -> UserPublic:
             full_name=payload.full_name,
             role_name=payload.role,
         )
+        logger.info("User registration successful for email=%s", payload.email)
         return UserPublic(**user)
     except ValueError as ve:
         # Validation / business rule errors (e.g., duplicate email)
+        logger.warning("Business rule error during registration for email=%s: %s", payload.email, ve)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
     except sqlite3.IntegrityError as ie:
         # Database constraint errors — sanitize details for users
         msg = str(ie).lower()
-        if "unique" in msg and "users.email" in msg:
-            detail = "Email is already registered."
-        else:
-            detail = "Invalid user data violates database constraints."
-        # Log as warning (known client-resolvable issue)
-        logger.warning("Integrity error during user registration: %s", ie)
+        is_email_unique = ("unique" in msg and "users.email" in msg) or ("unique constraint failed: users.email" in msg)
+        detail = "Email is already registered." if is_email_unique else "Invalid user data violates database constraints."
+        # Log detailed context (without exposing internals to the client)
+        logger.exception("IntegrityError during user registration for email=%s: %s", payload.email, ie)
+
+        # If duplicate email, attempt one-time ghost cleanup and retry
+        if is_email_unique:
+            try:
+                deleted = cleanup_ghost_user_records_for_email(db, payload.email)
+                if deleted > 0:
+                    logger.warning(
+                        "Cleaned up %s ghost user record(s) for email=%s, retrying registration.",
+                        deleted,
+                        payload.email,
+                    )
+                    # Retry exactly once after cleanup
+                    user = create_user(
+                        db,
+                        email=payload.email,
+                        password=payload.password,
+                        username=payload.username,
+                        full_name=payload.full_name,
+                        role_name=payload.role,
+                    )
+                    logger.info("User registration successful after cleanup for email=%s", payload.email)
+                    return UserPublic(**user)
+            except sqlite3.Error as retry_db_err:
+                logger.exception(
+                    "Database error during retry registration for email=%s after ghost cleanup: %s",
+                    payload.email,
+                    retry_db_err,
+                )
+                # Fall through to return 400 below
+
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
     except sqlite3.OperationalError as oe:
         # Operational DB errors indicate server-side issues
-        logger.exception("Database operational error during user registration: %s", oe)
+        logger.exception("Database operational error during user registration for email=%s: %s", payload.email, oe)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database operation failed. Please try again later.",
         )
+    except sqlite3.DatabaseError as dbe:
+        # Catch other database errors and log stack
+        logger.exception("Database error during user registration for email=%s: %s", payload.email, dbe)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error")
     except Exception as e:
         # Unexpected errors -> log full stack trace and report 500
-        logger.exception("Unexpected error during user registration: %s", e)
+        logger.exception("Unexpected error during user registration for email=%s: %s", payload.email, e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
