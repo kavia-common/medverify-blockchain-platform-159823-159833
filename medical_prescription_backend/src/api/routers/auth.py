@@ -91,12 +91,25 @@ def require_roles(*required_roles: str):
     response_model=UserPublic,
     summary="Register a user",
     description="Register a new user (doctor, pharmacist, patient, or admin). Requires email and password.",
-    responses={201: {"description": "User created"}},
+    responses={
+        201: {"description": "User created"},
+        400: {"description": "Bad request - validation error or duplicate email"},
+        500: {"description": "Internal server error"},
+    },
     status_code=201,
 )
 # PUBLIC_INTERFACE
 def register_user(payload: UserCreate, db=Depends(get_db)) -> UserPublic:
-    """Register a new user and assign a role. Email must be unique."""
+    """
+    Register a new user and assign a role.
+
+    Returns:
+        UserPublic: The created user's public profile.
+
+    Error handling:
+        - 400: Client-resolvable problems like duplicate email or business rule violations.
+        - 500: Unexpected or server-side issues. Stack traces are logged for diagnosis.
+    """
     try:
         user = create_user(
             db,
@@ -111,9 +124,22 @@ def register_user(payload: UserCreate, db=Depends(get_db)) -> UserPublic:
         # Validation / business rule errors (e.g., duplicate email)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
     except sqlite3.IntegrityError as ie:
-        # Database constraint errors
-        logger.exception("Integrity error during user registration")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Integrity error: " + str(ie))
+        # Database constraint errors — sanitize details for users
+        msg = str(ie).lower()
+        if "unique" in msg and "users.email" in msg:
+            detail = "Email is already registered."
+        else:
+            detail = "Invalid user data violates database constraints."
+        # Log as warning (known client-resolvable issue)
+        logger.warning("Integrity error during user registration: %s", ie)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+    except sqlite3.OperationalError as oe:
+        # Operational DB errors indicate server-side issues
+        logger.exception("Database operational error during user registration: %s", oe)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database operation failed. Please try again later.",
+        )
     except Exception as e:
         # Unexpected errors -> log full stack trace and report 500
         logger.exception("Unexpected error during user registration: %s", e)

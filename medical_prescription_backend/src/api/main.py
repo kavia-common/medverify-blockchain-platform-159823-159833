@@ -1,7 +1,9 @@
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from starlette.responses import JSONResponse
 
 from src.api.routers import auth as auth_router
 from src.api.routers import prescriptions as prescriptions_router
@@ -56,3 +58,32 @@ def health_check():
 # Include routers
 app.include_router(auth_router.router)
 app.include_router(prescriptions_router.router)
+
+
+@app.exception_handler(RequestValidationError)
+# PUBLIC_INTERFACE
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Global handler to return HTTP 400 for request validation errors instead of 422.
+
+    Args:
+        request: The incoming request object.
+        exc: The FastAPI RequestValidationError instance.
+
+    Returns:
+        JSONResponse with status 400, a high-level 'detail' message and an 'errors' array
+        providing field-level validation issues.
+
+    Notes:
+        - This handler avoids exposing internal details while giving clients actionable feedback.
+        - For 500-level errors elsewhere, stack traces are logged via logger.exception.
+    """
+    # Log as a warning without stack trace (client-side input issue)
+    logger.warning("Validation error on %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=400,
+        content={
+            "detail": "Invalid request. Please correct the input and try again.",
+            "errors": exc.errors(),
+        },
+    )
